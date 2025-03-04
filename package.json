@@ -12,6 +12,7 @@
   "description": "",
   "dependencies": {
     "cloudinary": "^2.5.1",
+    "dotenv": "^16.4.7",
     "fs-extra": "^11.3.0",
     "googleapis": "^144.0.0",
     "jsdom": "^26.0.0",

@@ -1,3 +1,4 @@
+import dotenv from "dotenv";
 import fetch from "node-fetch";
 import { JSDOM } from "jsdom";
 import TurndownService from "turndown";
@@ -6,6 +7,10 @@ import path from "path";
 import { uploadImageToCloudinary } from "./cloudinaryUploader.js";
 import { gfm, tables } from "turndown-plugin-gfm";
 
+// read .env.local file
+dotenv.config({ path: "./.env.local" });
+
+console.log("process.env.OPENAI_API_KEY:", process.env.OPENAI_API_KEY);
 // 初始化 HTML 轉 Markdown 服務
 const turndownService = new TurndownService({
   headingStyle: "atx",
@@ -19,7 +24,6 @@ turndownService.use(gfm);
 function preprocessGoogleDocsHTML(document) {
   document.querySelectorAll("span").forEach((span) => {
     const style = span.style.cssText.toLowerCase();
-
     // 處理粗體 (bold)
     if (
       style.includes("font-weight: bold") ||
@@ -38,7 +42,49 @@ function preprocessGoogleDocsHTML(document) {
   });
 }
 
-async function convertGoogleDocToMarkdown(docId, outputDir) {
+// 使用 GPT-4 API 潤飾 Markdown 內容
+async function refineMarkdown(markdownContent) {
+  const prompt = `你認為這篇md的格式是否整齊完整, 請檢視任何可能有錯誤的地方進行優化, 如果表格不容易整齊呈現, 你也可以考慮用資訊清晰美觀的方式去呈現表格內的資訊。除了格式調整之外，請注意你的輸出不要增加文章沒有的文字，我僅要你調整後的結果。
+
+原始內容：
+${markdownContent}`;
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-3.5-turbo",
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是一位專業的內容編輯，請協助潤飾 Markdown 文章。請查看這篇md的格式是否整齊完整, 請檢視任何可能有錯誤的地方進行優化, 如果表格不容易整齊呈現, 你也可以考慮用資訊清晰美觀的方式去呈現表格內的資訊。除了格式調整之外，請注意你的輸出不要增加文章沒有的文字，我僅要你調整後的結果。",
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.3,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI API 錯誤，狀態碼: ${response.status}`);
+    }
+    const data = await response.json();
+    const refined = data.choices[0].message.content;
+    console.log("潤飾後的 Markdown:", refined);
+    return refined;
+  } catch (error) {
+    console.error("呼叫 GPT-4 API 潤飾失敗:", error.message);
+    console.error(error);
+    return markdownContent;
+  }
+}
+
+async function convertAndReorg(docId, outputDir) {
   try {
     const googleDocsAPI = `https://docs.google.com/document/d/${docId}/export?format=html`;
     console.log(`Fetching Google Docs content from: ${googleDocsAPI}`);
@@ -110,7 +156,6 @@ async function convertGoogleDocToMarkdown(docId, outputDir) {
 
     // 轉換 HTML → Markdown
     let markdownContent = turndownService.turndown(document.body.innerHTML);
-    console.log("Converted Markdown:", markdownContent);
 
     // 確保 Markdown 內容不是空白
     if (!markdownContent || markdownContent.trim().length === 0) {
@@ -138,6 +183,9 @@ async function convertGoogleDocToMarkdown(docId, outputDir) {
     // 使用第一張圖片作為 metadata 的 image，若無圖片則使用預設值
     const imageMetadata = firstImageUrl || "/default-thumbnail.jpg";
 
+    // 呼叫 GPT-4 API 潤飾 Markdown 內容
+    markdownContent = await refineMarkdown(markdownContent);
+
     // 預設 Metadata
     const metadata = `---
 title: '${title}'
@@ -163,7 +211,7 @@ image: '${imageMetadata}'
   }
 }
 
-const outputDir = "D:/skyline-education-consultant/blogpost/zh";
+const outputDir = "D:/skyline-education-consultant/blogposts/zh";
 
 // 檢查命令列參數
 const docIdsArg = process.argv[2];
@@ -177,34 +225,50 @@ if (docIdsArg) {
   async function convertSelectedDocs() {
     for (const id of docIds) {
       console.log(`\n=== 正在轉換 docId: ${id} ===`);
-      await convertGoogleDocToMarkdown(id, outputDir);
+      await convertAndReorg(id, outputDir);
     }
   }
   convertSelectedDocs();
 } else {
   // 沒有傳入參數，則從指定的 JSON 檔案中讀取 docid
-  const docIdsPath = "D:/google-docs-to-md/unConvertedDocIds.json";
-  if (!fs.existsSync(docIdsPath)) {
+  const unConvertDocIdsPath = "D:/google-docs-to-md/unConvertDocIds.json";
+  const convertedDocIdsPath = "D:/google-docs-to-md/convertedDocIds.json";
+
+  if (!fs.existsSync(unConvertDocIdsPath)) {
     console.error(
-      `❌ 檔案 ${docIdsPath} 不存在，請先建立一個包含 docid 陣列的 JSON 檔案`
+      `❌ 檔案 ${unConvertDocIdsPath} 不存在，請先建立一個包含 docid 陣列的 JSON 檔案`
     );
     process.exit(1);
   }
-  let docIds = await fs.readJson(docIdsPath);
+  let docIds = await fs.readJson(unConvertDocIdsPath);
   if (!Array.isArray(docIds) || docIds.length === 0) {
     console.error("❌ JSON 檔案中沒有任何 docid");
     process.exit(1);
   }
+  // 如果 convertedDocIds.json 不存在，先建立空陣列
+  let convertedDocIds = [];
+  if (fs.existsSync(convertedDocIdsPath)) {
+    convertedDocIds = await fs.readJson(convertedDocIdsPath);
+    if (!Array.isArray(convertedDocIds)) {
+      convertedDocIds = [];
+    }
+  }
+
   async function convertAllDocs() {
     for (const id of [...docIds]) {
       console.log(`\n=== 正在轉換 docId: ${id} ===`);
-      const success = await convertGoogleDocToMarkdown(id, outputDir);
+      const success = await convertAndReorg(id, outputDir);
       if (success) {
         // 移除已轉換的 id
         docIds = docIds.filter((docId) => docId !== id);
-        // 更新 JSON 檔案
-        await fs.writeJson(docIdsPath, docIds, { spaces: 2 });
-        console.log(`已從 ${docIdsPath} 刪除已轉換的 docId: ${id}`);
+        // 更新未轉換的 JSON 檔案
+        await fs.writeJson(unConvertDocIdsPath, docIds, { spaces: 2 });
+        console.log(`已從 ${unConvertDocIdsPath} 刪除已轉換的 docId: ${id}`);
+
+        // 將轉換成功的 id 加入轉換紀錄檔
+        convertedDocIds.push(id);
+        await fs.writeJson(convertedDocIdsPath, convertedDocIds, { spaces: 2 });
+        console.log(`已將 docId: ${id} 新增至 ${convertedDocIdsPath}`);
       } else {
         console.error(`docId ${id} 轉換失敗，暫不刪除`);
       }
