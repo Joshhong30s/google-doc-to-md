@@ -10,7 +10,6 @@ import { gfm, tables } from "turndown-plugin-gfm";
 // read .env.local file
 dotenv.config({ path: "./.env.local" });
 
-console.log("process.env.OPENAI_API_KEY:", process.env.OPENAI_API_KEY);
 // 初始化 HTML 轉 Markdown 服務
 const turndownService = new TurndownService({
   headingStyle: "atx",
