@@ -11,8 +11,9 @@ cloudinary.v2.config({
 });
 
 export async function uploadImageToCloudinary(imageUrl) {
+  const uploadFolder = process.env.CLOUDINARY_UPLOAD_FOLDER;
   const result = await cloudinary.v2.uploader.upload(imageUrl, {
-    folder: "Education",
+    folder: uploadFolder,
   });
   return result.secure_url;
 }

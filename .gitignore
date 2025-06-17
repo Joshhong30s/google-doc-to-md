@@ -9,6 +9,10 @@
 /out/
 
 
+# json
+/unConvertDocIds.json
+/convertedDocIds.json
+
 # production
 /build
 
@@ -26,5 +30,5 @@
 *.tsbuildinfo
 next-env.d.ts
 
-# records
-google-docs-output.html
+# build/output files
+/google-docs-output.html
